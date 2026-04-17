@@ -1,0 +1,92 @@
+{
+  "games": [
+    {
+      "id": "g001",
+      "name": "13 Days: The Cuban Missile Crisis",
+      "year": 2016,
+      "minPlayers": 2,
+      "maxPlayers": 2,
+      "minPlaytime": 45,
+      "maxPlaytime": 60,
+      "weight": 2.93,
+      "tags": ["t01", "t04", "t09", "t10"]
+    },
+    {
+      "id": "g002",
+      "name": "Brass: Birmingham",
+      "year": 2018,
+      "minPlayers": 2,
+      "maxPlayers": 4,
+      "minPlaytime": 60,
+      "maxPlaytime": 120,
+      "weight": 3.91,
+      "tags": ["t02", "t05", "t18"]
+    },
+    {
+      "id": "g003",
+      "name": "Pandemic",
+      "year": 2008,
+      "minPlayers": 2,
+      "maxPlayers": 4,
+      "minPlaytime": 45,
+      "maxPlaytime": 45,
+      "weight": 2.41,
+      "tags": ["t04", "t16"]
+    },
+    {
+      "id": "g004",
+      "name": "Patchwork",
+      "year": 2014,
+      "minPlayers": 2,
+      "maxPlayers": 2,
+      "minPlaytime": 15,
+      "maxPlaytime": 30,
+      "weight": 1.68,
+      "tags": ["t01", "t03", "t12"]
+    },
+    {
+      "id": "g005",
+      "name": "Terra Mystica",
+      "year": 2012,
+      "minPlayers": 2,
+      "maxPlayers": 5,
+      "minPlaytime": 60,
+      "maxPlaytime": 150,
+      "weight": 3.95,
+      "tags": ["t02", "t05", "t18"]
+    },
+    {
+      "id": "g006",
+      "name": "Wingspan",
+      "year": 2019,
+      "minPlayers": 1,
+      "maxPlayers": 5,
+      "minPlaytime": 40,
+      "maxPlaytime": 70,
+      "weight": 2.45,
+      "tags": ["t02", "t03", "t19"]
+    }
+  ],
+  "tags": [
+    { "id": "t01", "name": "2 Player" },
+    { "id": "t17", "name": "Auction" },
+    { "id": "t20", "name": "Area Control" },
+    { "id": "t16", "name": "Cooperative" },
+    { "id": "t07", "name": "Deck Building" },
+    { "id": "t21", "name": "Drafting" },
+    { "id": "t14", "name": "Draw & Write" },
+    { "id": "t19", "name": "Engine Building" },
+    { "id": "t02", "name": "Euro" },
+    { "id": "t15", "name": "Flip & Write" },
+    { "id": "t05", "name": "Heavyweight" },
+    { "id": "t09", "name": "Historical" },
+    { "id": "t03", "name": "Lightweight" },
+    { "id": "t04", "name": "Midweight" },
+    { "id": "t12", "name": "Polyomino" },
+    { "id": "t11", "name": "Rondel" },
+    { "id": "t13", "name": "Roll & Write" },
+    { "id": "t06", "name": "Tile Laying" },
+    { "id": "t10", "name": "War Game" },
+    { "id": "t08", "name": "Worker Placement" }
+  ]
+}
