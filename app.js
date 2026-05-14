@@ -6,19 +6,25 @@ const REPO   = 'my-game-collection';
 const FILE   = 'games.json';
 const BRANCH = 'main';
 const API_URL = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${FILE}?ref=${BRANCH}`;
-const PAT_KEY  = 'gcol_pat';
-const VIEW_KEY = 'gcol_view';
+const PAT_KEY     = 'gcol_pat';
+const VIEW_KEY    = 'gcol_view';
+const BGG_KEY_KEY = 'gcol_bgg_key';
+
+// BGG XML API2 base. If you hit CORS errors swap in a proxy:
+// const BGG_BASE = 'https://corsproxy.io/?https://boardgamegeek.com/xmlapi2';
+const BGG_BASE = 'https://boardgamegeek.com/xmlapi2';
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const S = {
   data: { games: [], tags: [] },
   sha: null,
-  pat: localStorage.getItem(PAT_KEY) || '',
+  pat:    localStorage.getItem(PAT_KEY)     || '',
+  bggKey: localStorage.getItem(BGG_KEY_KEY) || '',
   activeTags: new Set(),
-  view: localStorage.getItem(VIEW_KEY) || 'grid',
-  saving: false,
+  view:  localStorage.getItem(VIEW_KEY) || 'grid',
+  saving:  false,
   loading: true,
-  error: null,
+  error:   null,
 };
 
 // ── Base64 helpers (unicode-safe) ─────────────────────────────────────────────
@@ -34,8 +40,8 @@ function fromB64(b64) {
 // ── GitHub API ────────────────────────────────────────────────────────────────
 async function loadData() {
   S.loading = true;
-  S.error = null;
-  renderGamesArea(); // show spinner immediately
+  S.error   = null;
+  renderGamesArea();
   try {
     const headers = { Accept: 'application/vnd.github.v3+json' };
     if (S.pat) headers['Authorization'] = `token ${S.pat}`;
@@ -44,7 +50,6 @@ async function loadData() {
     const json = await res.json();
     S.sha = json.sha;
     S.data = JSON.parse(fromB64(json.content));
-    // Ensure arrays exist
     S.data.games = S.data.games || [];
     S.data.tags  = S.data.tags  || [];
   } catch (e) {
@@ -91,6 +96,134 @@ async function saveData() {
   }
 }
 
+// ── BGG API ───────────────────────────────────────────────────────────────────
+function bggFetch(path, params = {}) {
+  if (S.bggKey) params.apikey = S.bggKey;
+  const qs = new URLSearchParams(params).toString();
+  return fetch(`${BGG_BASE}${path}?${qs}`);
+}
+
+function parseXml(text) {
+  return new DOMParser().parseFromString(text, 'text/xml');
+}
+
+async function bggSearch(query) {
+  const res = await bggFetch('/search', { query, type: 'boardgame' });
+  if (!res.ok) throw new Error(`BGG returned ${res.status}`);
+  const doc = parseXml(await res.text());
+  // Check for parse error
+  if (doc.querySelector('parsererror')) throw new Error('Unexpected BGG response — check your API key.');
+  return [...doc.querySelectorAll('item')].slice(0, 10).map(el => ({
+    id:   el.getAttribute('id'),
+    name: el.querySelector('name[type="primary"]')?.getAttribute('value')
+          ?? el.querySelector('name')?.getAttribute('value')
+          ?? '?',
+    year: el.querySelector('yearpublished')?.getAttribute('value') ?? null,
+  }));
+}
+
+async function bggThing(id) {
+  let res = await bggFetch('/thing', { id, stats: 1 });
+  // BGG sometimes queues requests and returns 202
+  if (res.status === 202) {
+    await delay(2500);
+    res = await bggFetch('/thing', { id, stats: 1 });
+  }
+  if (!res.ok) throw new Error(`BGG returned ${res.status}`);
+  const doc  = parseXml(await res.text());
+  if (doc.querySelector('parsererror')) throw new Error('Unexpected BGG response.');
+  const item = doc.querySelector('item');
+  if (!item) throw new Error('Game not found on BGG.');
+  const rawWeight = item.querySelector('averageweight')?.getAttribute('value');
+  return {
+    bgg_id:        id,
+    name:          item.querySelector('name[type="primary"]')?.getAttribute('value') ?? '',
+    thumbnail_url: item.querySelector('thumbnail')?.textContent.trim() || null,
+    image_url:     item.querySelector('image')?.textContent.trim()     || null,
+    year:          parseInt(item.querySelector('yearpublished')?.getAttribute('value'))  || null,
+    minPlayers:    parseInt(item.querySelector('minplayers')?.getAttribute('value'))     || null,
+    maxPlayers:    parseInt(item.querySelector('maxplayers')?.getAttribute('value'))     || null,
+    minPlaytime:   parseInt(item.querySelector('minplaytime')?.getAttribute('value'))   || null,
+    maxPlaytime:   parseInt(item.querySelector('maxplaytime')?.getAttribute('value'))   || null,
+    weight:        rawWeight ? Math.round(parseFloat(rawWeight) * 100) / 100 : null,
+  };
+}
+
+function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Wire up BGG search input inside the currently-open modal
+let bggSearchTimer;
+function wireBggSearch() {
+  const input = document.getElementById('bgg-q');
+  if (!input) return;
+  input.addEventListener('input', () => {
+    clearTimeout(bggSearchTimer);
+    const q = input.value.trim();
+    const box = document.getElementById('bgg-results');
+    if (!box) return;
+    if (q.length < 2) { box.innerHTML = ''; box.classList.remove('open'); return; }
+    box.innerHTML = '<div class="bgg-status">Searching…</div>';
+    box.classList.add('open');
+    bggSearchTimer = setTimeout(async () => {
+      try {
+        const results = await bggSearch(q);
+        if (!results.length) {
+          box.innerHTML = '<div class="bgg-status">No results found.</div>';
+          return;
+        }
+        box.innerHTML = results.map(g => `
+          <div class="bgg-result" onclick="selectBggGame('${esc(g.id)}')">
+            <span class="bgg-result-name">${esc(g.name)}</span>
+            ${g.year ? `<span class="bgg-result-year">${esc(g.year)}</span>` : ''}
+          </div>`).join('');
+      } catch (e) {
+        box.innerHTML = `<div class="bgg-status error">⚠ ${esc(e.message)}</div>`;
+      }
+    }, 400);
+  });
+  input.focus();
+}
+
+async function selectBggGame(id) {
+  const box = document.getElementById('bgg-results');
+  if (box) box.innerHTML = '<div class="bgg-status">Loading details…</div>';
+
+  try {
+    const g = await bggThing(id);
+
+    // Fill all form fields
+    const set = (elId, val) => { const el = document.getElementById(elId); if (el && val != null) el.value = val; };
+    set('f-bgg-id',    g.bgg_id);
+    set('f-thumbnail', g.thumbnail_url || '');
+    set('f-name',      g.name);
+    set('f-year',      g.year);
+    set('f-weight',    g.weight);
+    set('f-minp',      g.minPlayers);
+    set('f-maxp',      g.maxPlayers);
+    set('f-mint',      g.minPlaytime);
+    set('f-maxt',      g.maxPlaytime);
+
+    // Update thumbnail preview
+    const preview = document.getElementById('thumb-preview');
+    if (preview) {
+      preview.innerHTML = g.thumbnail_url
+        ? `<img src="${esc(g.thumbnail_url)}" alt="${esc(g.name)}" />`
+        : '';
+      preview.classList.toggle('has-image', !!g.thumbnail_url);
+    }
+
+    if (box) {
+      box.innerHTML = `<div class="bgg-status success">✓ ${esc(g.name)} loaded — adjust tags below and save.</div>`;
+    }
+    // Clear search input
+    const input = document.getElementById('bgg-q');
+    if (input) input.value = '';
+
+  } catch (e) {
+    if (box) box.innerHTML = `<div class="bgg-status error">⚠ ${esc(e.message)}</div>`;
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function genId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
@@ -106,10 +239,8 @@ function getFilteredGames() {
 }
 function esc(v) {
   return String(v ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 function weightDots(w) {
   const n = Math.min(5, Math.max(0, Math.round(parseFloat(w) || 0)));
@@ -137,8 +268,8 @@ function getInitials(name) {
     : name.slice(0, 2)).toUpperCase();
 }
 const PLACEHOLDER_COLORS = [
-  '#1a2a4a', '#2d1a4a', '#1a3a3a', '#3d1a3a', '#1a3d20', '#2d2a10',
-  '#1e3060', '#38186a', '#163838', '#4a1a38',
+  '#1a2a4a','#2d1a4a','#1a3a3a','#3d1a3a','#1a3d20','#2d2a10',
+  '#1e3060','#38186a','#163838','#4a1a38',
 ];
 function placeholderColor(name) {
   let h = 0;
@@ -163,7 +294,7 @@ function renderHeaderActions() {
          </button>`
       : ''}
     <button class="btn-icon" onclick="openSettingsModal()"
-            title="${S.pat ? 'Settings (PAT configured)' : 'Set GitHub PAT to enable editing'}">
+            title="${S.pat ? 'Settings' : 'Set GitHub PAT to enable editing'}">
       ${S.pat ? '⚙️' : '🔒'}
     </button>
   `;
@@ -177,7 +308,7 @@ function renderFilterBar() {
   const pills = S.data.tags.map(tag => {
     const active = S.activeTags.has(tag.id) ? 'active' : '';
     return `
-      <span class="tag-pill ${active}" data-id="${esc(tag.id)}">
+      <span class="tag-pill ${active}">
         <span onclick="toggleTag('${esc(tag.id)}')">${esc(tag.name)}</span>
         ${canEdit
           ? `<span class="tag-del" onclick="confirmDeleteTag('${esc(tag.id)}')" title="Delete tag">×</span>`
@@ -195,10 +326,8 @@ function renderFilterBar() {
     <div class="filter-right">
       ${canEdit ? `<button class="btn-add-tag" onclick="openAddTagModal()">+ Tag</button>` : ''}
       <div class="view-toggle">
-        <button class="${S.view === 'grid' ? 'active' : ''}"
-                onclick="setView('grid')" title="Grid view">⊞</button>
-        <button class="${S.view === 'list' ? 'active' : ''}"
-                onclick="setView('list')" title="List view">☰</button>
+        <button class="${S.view === 'grid' ? 'active' : ''}" onclick="setView('grid')" title="Grid">⊞</button>
+        <button class="${S.view === 'list' ? 'active' : ''}" onclick="setView('list')" title="List">☰</button>
       </div>
     </div>
   `;
@@ -207,44 +336,32 @@ function renderFilterBar() {
 function renderGamesArea() {
   const el = document.getElementById('games-area');
   if (!el) return;
-
   if (S.loading) {
     el.innerHTML = `<div class="loading-state"><div class="spinner"></div><span>Loading collection…</span></div>`;
     return;
   }
   if (S.error) {
-    el.innerHTML = `
-      <div class="error-state">
-        <p>⚠ ${esc(S.error)}</p>
-        <button onclick="loadData()">Retry</button>
-      </div>`;
+    el.innerHTML = `<div class="error-state"><p>⚠ ${esc(S.error)}</p><button onclick="loadData()">Retry</button></div>`;
     return;
   }
-
   const games = getFilteredGames();
   if (games.length === 0) {
     el.innerHTML = `<div class="empty-state">${
       S.activeTags.size > 0
         ? 'No games match those filters. <button class="btn-clear" onclick="clearFilters()" style="margin-left:8px">Clear filters</button>'
         : S.pat
-          ? 'No games yet. Hit <strong>+ Add Game</strong> to start your collection!'
+          ? 'No games yet — hit <strong>+ Add Game</strong> to start!'
           : 'No games yet.'
     }</div>`;
     return;
   }
-
   if (S.view === 'grid') {
     el.innerHTML = `<div class="game-grid">${games.map(renderCard).join('')}</div>`;
   } else {
     el.innerHTML = `
       <table class="game-list">
         <thead><tr>
-          <th>Name</th>
-          <th>Year</th>
-          <th>Players</th>
-          <th>Time</th>
-          <th>Weight</th>
-          <th>Tags</th>
+          <th>Name</th><th>Year</th><th>Players</th><th>Time</th><th>Weight</th><th>Tags</th>
           ${S.pat ? '<th></th>' : ''}
         </tr></thead>
         <tbody>${games.map(renderRow).join('')}</tbody>
@@ -256,17 +373,17 @@ function renderCard(game) {
   const color    = placeholderColor(game.name);
   const initials = getInitials(game.name);
   const tagHtml  = game.tags
-    .map(tid => getTag(tid))
-    .filter(Boolean)
-    .map(t => `<span class="tag-chip">${esc(t.name)}</span>`)
-    .join('');
+    .map(tid => getTag(tid)).filter(Boolean)
+    .map(t => `<span class="tag-chip">${esc(t.name)}</span>`).join('');
   const click = S.pat ? `onclick="openEditModal('${esc(game.id)}')"` : '';
   return `
     <div class="game-card" ${click}>
       <div class="card-image" style="background:${color}">
         ${game.thumbnail_url
-          ? `<img src="${esc(game.thumbnail_url)}" alt="${esc(game.name)}" loading="lazy" />`
-          : `<span class="card-initials">${esc(initials)}</span>`}
+          ? `<img src="${esc(game.thumbnail_url)}" alt="${esc(game.name)}" loading="lazy"
+                  onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" />`
+          : ''}
+        <span class="card-initials" ${game.thumbnail_url ? 'style="display:none"' : ''}>${esc(initials)}</span>
       </div>
       <div class="card-body">
         <div class="card-name">${esc(game.name)}</div>
@@ -284,8 +401,7 @@ function renderRow(game) {
   const time = game.minPlaytime
     ? (game.minPlaytime === game.maxPlaytime ? `${game.minPlaytime}m` : `${game.minPlaytime}–${game.maxPlaytime}m`)
     : '—';
-  const tags = game.tags
-    .map(tid => getTag(tid)).filter(Boolean)
+  const tags = game.tags.map(tid => getTag(tid)).filter(Boolean)
     .map(t => `<span class="tag-chip small">${esc(t.name)}</span>`).join('');
   const actions = S.pat
     ? `<td><button class="btn-edit" onclick="openEditModal('${esc(game.id)}')">Edit</button></td>`
@@ -309,48 +425,67 @@ function openModal(html) {
 }
 function closeModal() {
   document.getElementById('modal-overlay').classList.remove('open');
+  clearTimeout(bggSearchTimer);
 }
 
-// Settings / PAT
+// Settings (PAT + BGG key)
 function openSettingsModal() {
   openModal(`
-    <h2>${S.pat ? 'Settings' : 'GitHub Access'}</h2>
-    <p class="modal-hint">
-      Paste a GitHub <strong>Personal Access Token</strong> with
-      <code>repo</code> write scope to enable editing.
-      Friends can view your collection without a token.
-    </p>
-    <p class="modal-hint">
-      <a href="https://github.com/settings/tokens/new?description=my-game-collection&scopes=repo"
-         target="_blank" rel="noopener">Create a token on GitHub ↗</a>
-    </p>
-    <label>
-      <span>Personal Access Token</span>
-      <input id="pat-input" type="password" value="${esc(S.pat)}"
-             placeholder="ghp_…" autocomplete="off" />
-    </label>
-    <div class="modal-actions" style="margin-top:20px">
-      <button class="btn-primary" onclick="savePat()">Save</button>
-      ${S.pat ? `<button class="btn-danger" onclick="clearPat()">Remove PAT</button>` : ''}
+    <h2>Settings</h2>
+
+    <div class="settings-section">
+      <h3>GitHub Access</h3>
+      <p class="modal-hint">
+        A <strong>Personal Access Token</strong> with <code>repo</code> write scope lets you add and
+        edit games. Friends can view without one.
+        <a href="https://github.com/settings/tokens/new?description=my-game-collection&scopes=repo"
+           target="_blank" rel="noopener">Create token ↗</a>
+      </p>
+      <label>
+        <span>Personal Access Token</span>
+        <input id="pat-input" type="password" value="${esc(S.pat)}" placeholder="ghp_…" autocomplete="off" />
+      </label>
+    </div>
+
+    <div class="settings-section">
+      <h3>BoardGameGeek API</h3>
+      <p class="modal-hint">
+        Your BGG API key enables game search and auto-fills details &amp; cover images when adding games.
+        Stored only in your browser — never committed to the repo.
+      </p>
+      <label>
+        <span>BGG API Key</span>
+        <input id="bgg-key-input" type="password" value="${esc(S.bggKey)}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off" />
+      </label>
+    </div>
+
+    <div class="modal-actions" style="margin-top:24px">
+      <button class="btn-primary" onclick="saveSettings()">Save</button>
+      ${(S.pat || S.bggKey)
+        ? `<button class="btn-danger" onclick="clearSettings()">Clear All</button>`
+        : ''}
       <button class="btn-secondary" onclick="closeModal()">Cancel</button>
     </div>
   `);
-  setTimeout(() => document.getElementById('pat-input')?.focus(), 50);
 }
-function savePat() {
-  const val = (document.getElementById('pat-input')?.value || '').trim();
-  S.pat = val;
-  val ? localStorage.setItem(PAT_KEY, val) : localStorage.removeItem(PAT_KEY);
+function saveSettings() {
+  const pat = (document.getElementById('pat-input')?.value    || '').trim();
+  const bgg = (document.getElementById('bgg-key-input')?.value || '').trim();
+  S.pat    = pat;
+  S.bggKey = bgg;
+  pat ? localStorage.setItem(PAT_KEY,     pat) : localStorage.removeItem(PAT_KEY);
+  bgg ? localStorage.setItem(BGG_KEY_KEY, bgg) : localStorage.removeItem(BGG_KEY_KEY);
   closeModal();
   renderApp();
-  showToast(val ? 'PAT saved — edit mode enabled.' : 'PAT removed. View-only mode.');
+  showToast('Settings saved.');
 }
-function clearPat() {
-  S.pat = '';
+function clearSettings() {
+  S.pat = ''; S.bggKey = '';
   localStorage.removeItem(PAT_KEY);
+  localStorage.removeItem(BGG_KEY_KEY);
   closeModal();
   renderApp();
-  showToast('PAT removed. View-only mode.');
+  showToast('Settings cleared. View-only mode.');
 }
 
 // Add Tag
@@ -359,7 +494,7 @@ function openAddTagModal() {
     <h2>Add Tag</h2>
     <label>
       <span>Tag name</span>
-      <input id="new-tag-input" type="text" placeholder="e.g. Solo, Abstract…" maxlength="40" />
+      <input id="new-tag-input" type="text" placeholder="e.g. Solo, Abstract, Party…" maxlength="40" />
     </label>
     <div class="modal-actions" style="margin-top:20px">
       <button class="btn-primary" onclick="submitTag()">Add Tag</button>
@@ -377,9 +512,9 @@ function confirmDeleteTag(id) {
   openModal(`
     <h2>Delete Tag?</h2>
     <p class="modal-hint">
-      Remove the tag <strong>${esc(tag.name)}</strong>?
+      Remove <strong>${esc(tag.name)}</strong>?
       ${usedBy > 0
-        ? `It will be removed from <strong>${usedBy} game${usedBy > 1 ? 's' : ''}</strong>.`
+        ? `It will be removed from <strong>${usedBy} game${usedBy !== 1 ? 's' : ''}</strong>.`
         : 'It is not assigned to any games.'}
     </p>
     <div class="modal-actions" style="margin-top:20px">
@@ -399,7 +534,7 @@ function openAddModal() {
       <button class="btn-secondary" onclick="closeModal()">Cancel</button>
     </div>
   `);
-  document.getElementById('f-name')?.focus();
+  wireBggSearch();
 }
 
 // Edit Game
@@ -415,6 +550,7 @@ function openEditModal(id) {
       <button class="btn-secondary" onclick="closeModal()">Cancel</button>
     </div>
   `);
+  wireBggSearch();
 }
 
 // Confirm delete game
@@ -423,9 +559,7 @@ function confirmDeleteGame(id) {
   if (!game) return;
   openModal(`
     <h2>Remove from Collection?</h2>
-    <p class="modal-hint">
-      Remove <strong>${esc(game.name)}</strong>? This cannot be undone.
-    </p>
+    <p class="modal-hint">Remove <strong>${esc(game.name)}</strong>? This cannot be undone.</p>
     <div class="modal-actions" style="margin-top:20px">
       <button class="btn-danger" onclick="deleteGame('${esc(id)}')">Remove</button>
       <button class="btn-secondary" onclick="closeModal()">Cancel</button>
@@ -436,6 +570,8 @@ function confirmDeleteGame(id) {
 // Shared game form HTML
 function gameForm(game) {
   const v = (field, fallback = '') => esc(game?.[field] ?? fallback);
+  const hasBgg = !!S.bggKey;
+
   const tagChecks = S.data.tags.map(tag => {
     const checked = (game?.tags || []).includes(tag.id) ? 'checked' : '';
     return `
@@ -445,44 +581,61 @@ function gameForm(game) {
       </label>`;
   }).join('');
 
+  const thumbUrl = game?.thumbnail_url || '';
+
   return `
-    <div class="form-grid">
-      <label class="full">
-        <span>Name *</span>
-        <input id="f-name" type="text" value="${v('name')}"
-               placeholder="Game name" />
-      </label>
+    ${hasBgg ? `
+    <div class="bgg-search-wrap">
       <label>
-        <span>Year</span>
-        <input id="f-year" type="number" value="${v('year')}"
-               placeholder="2024" min="1900" max="2100" />
+        <span>Search BoardGameGeek</span>
+        <input id="bgg-q" type="text" placeholder="Start typing a game name…" autocomplete="off" />
       </label>
-      <label>
-        <span>Weight (1–5)</span>
-        <input id="f-weight" type="number" value="${v('weight')}"
-               placeholder="2.5" min="1" max="5" step="0.1" />
-      </label>
-      <label>
-        <span>Min Players</span>
-        <input id="f-minp" type="number" value="${v('minPlayers')}"
-               placeholder="1" min="1" max="20" />
-      </label>
-      <label>
-        <span>Max Players</span>
-        <input id="f-maxp" type="number" value="${v('maxPlayers')}"
-               placeholder="4" min="1" max="20" />
-      </label>
-      <label>
-        <span>Min Playtime (min)</span>
-        <input id="f-mint" type="number" value="${v('minPlaytime')}"
-               placeholder="30" min="1" />
-      </label>
-      <label>
-        <span>Max Playtime (min)</span>
-        <input id="f-maxt" type="number" value="${v('maxPlaytime')}"
-               placeholder="90" min="1" />
-      </label>
+      <div id="bgg-results"></div>
     </div>
+    <div class="form-divider"></div>
+    ` : ''}
+
+    <div class="thumb-and-form">
+      <div id="thumb-preview" class="${thumbUrl ? 'has-image' : ''}">
+        ${thumbUrl ? `<img src="${esc(thumbUrl)}" alt="cover" />` : ''}
+      </div>
+
+      <div class="form-grid">
+        <label class="full">
+          <span>Name *</span>
+          <input id="f-name" type="text" value="${v('name')}" placeholder="Game name" />
+        </label>
+        <label>
+          <span>Year</span>
+          <input id="f-year" type="number" value="${v('year')}" placeholder="2024" min="1900" max="2100" />
+        </label>
+        <label>
+          <span>Weight (1–5)</span>
+          <input id="f-weight" type="number" value="${v('weight')}" placeholder="2.5" min="1" max="5" step="0.1" />
+        </label>
+        <label>
+          <span>Min Players</span>
+          <input id="f-minp" type="number" value="${v('minPlayers')}" placeholder="1" min="1" max="20" />
+        </label>
+        <label>
+          <span>Max Players</span>
+          <input id="f-maxp" type="number" value="${v('maxPlayers')}" placeholder="4" min="1" max="20" />
+        </label>
+        <label>
+          <span>Min Playtime (min)</span>
+          <input id="f-mint" type="number" value="${v('minPlaytime')}" placeholder="30" min="1" />
+        </label>
+        <label>
+          <span>Max Playtime (min)</span>
+          <input id="f-maxt" type="number" value="${v('maxPlaytime')}" placeholder="90" min="1" />
+        </label>
+      </div>
+    </div>
+
+    <!-- Hidden BGG fields -->
+    <input type="hidden" id="f-bgg-id"    value="${v('bgg_id')}" />
+    <input type="hidden" id="f-thumbnail" value="${esc(thumbUrl)}" />
+
     <div class="form-tags">
       <span>Tags</span>
       <div class="tag-checks">${tagChecks || '<span style="color:var(--text-dim);font-size:13px">No tags yet — add some from the filter bar.</span>'}</div>
@@ -495,18 +648,19 @@ async function submitGame(existingId) {
   const name = document.getElementById('f-name')?.value.trim();
   if (!name) { showToast('Name is required', 'error'); return; }
 
-  const checkedTags = [...document.querySelectorAll('input[name="tags"]:checked')].map(el => el.value);
-
+  const tags = [...document.querySelectorAll('input[name="tags"]:checked')].map(el => el.value);
   const gameData = {
-    id: existingId || genId(),
+    id:            existingId || genId(),
     name,
-    year:        parseInt(document.getElementById('f-year')?.value)   || null,
-    weight:      parseFloat(document.getElementById('f-weight')?.value) || null,
-    minPlayers:  parseInt(document.getElementById('f-minp')?.value)   || null,
-    maxPlayers:  parseInt(document.getElementById('f-maxp')?.value)   || null,
-    minPlaytime: parseInt(document.getElementById('f-mint')?.value)   || null,
-    maxPlaytime: parseInt(document.getElementById('f-maxt')?.value)   || null,
-    tags: checkedTags,
+    bgg_id:        document.getElementById('f-bgg-id')?.value    || null,
+    thumbnail_url: document.getElementById('f-thumbnail')?.value || null,
+    year:          parseInt(document.getElementById('f-year')?.value)     || null,
+    weight:        parseFloat(document.getElementById('f-weight')?.value) || null,
+    minPlayers:    parseInt(document.getElementById('f-minp')?.value)     || null,
+    maxPlayers:    parseInt(document.getElementById('f-maxp')?.value)     || null,
+    minPlaytime:   parseInt(document.getElementById('f-mint')?.value)     || null,
+    maxPlaytime:   parseInt(document.getElementById('f-maxt')?.value)     || null,
+    tags,
   };
 
   if (existingId) {
@@ -536,8 +690,7 @@ async function submitTag() {
   const name = document.getElementById('new-tag-input')?.value.trim();
   if (!name) return;
   if (S.data.tags.some(t => t.name.toLowerCase() === name.toLowerCase())) {
-    showToast('That tag already exists', 'error');
-    return;
+    showToast('That tag already exists', 'error'); return;
   }
   S.data.tags.push({ id: genId(), name });
   S.data.tags.sort((a, b) => a.name.localeCompare(b.name));
@@ -588,22 +741,16 @@ function showToast(msg, type = 'success') {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  // Close modal when clicking outside the box
   document.getElementById('modal-overlay').addEventListener('click', e => {
     if (e.target === e.currentTarget) closeModal();
   });
-  // Close modal on Escape
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') closeModal();
-  });
-  // Enter key submits single-field modals
-  document.addEventListener('keydown', e => {
     if (e.key !== 'Enter') return;
-    const activeModal = document.getElementById('modal-overlay').classList.contains('open');
-    if (!activeModal) return;
-    if (document.getElementById('new-tag-input') === document.activeElement) submitTag();
-    if (document.getElementById('pat-input') === document.activeElement) savePat();
+    if (!document.getElementById('modal-overlay').classList.contains('open')) return;
+    if (document.activeElement?.id === 'new-tag-input') submitTag();
+    if (document.activeElement?.id === 'pat-input')     saveSettings();
+    if (document.activeElement?.id === 'bgg-key-input') saveSettings();
   });
-
   loadData();
 });

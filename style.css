@@ -619,6 +619,111 @@ input::placeholder { color: var(--text-dim); }
 .toast.success { border-color: rgba(74, 222, 128, 0.4); color: var(--success); }
 .toast.error   { border-color: rgba(248, 113, 113, 0.4); color: var(--danger); }
 
+/* ── Settings Modal Sections ─────────────────────────────────────────────── */
+.settings-section {
+  margin-bottom: 24px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-section:last-of-type { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+.settings-section h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+/* ── BGG Search ──────────────────────────────────────────────────────────── */
+.bgg-search-wrap {
+  margin-bottom: 4px;
+  position: relative;
+}
+#bgg-results {
+  display: none;
+  position: absolute;
+  left: 0; right: 0;
+  top: calc(100% + 4px);
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  z-index: 50;
+  max-height: 240px;
+  overflow-y: auto;
+}
+#bgg-results.open { display: block; }
+
+.bgg-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+}
+.bgg-result:last-child { border-bottom: none; }
+.bgg-result:hover { background: var(--surface-3); }
+
+.bgg-result-name {
+  font-size: 13px;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bgg-result-year {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-left: 10px;
+  flex-shrink: 0;
+}
+
+.bgg-status {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.bgg-status.success { color: var(--success); }
+.bgg-status.error   { color: var(--danger); }
+
+.form-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 16px 0;
+}
+
+/* ── Thumbnail + Form side-by-side ───────────────────────────────────────── */
+.thumb-and-form {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+#thumb-preview {
+  flex-shrink: 0;
+  width: 80px;
+  height: 80px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  display: none; /* hidden until has-image */
+}
+#thumb-preview.has-image {
+  display: block;
+}
+#thumb-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.thumb-and-form .form-grid { flex: 1; min-width: 0; }
+
 /* ── Scrollbar ───────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
