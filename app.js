@@ -6,20 +6,16 @@ const REPO   = 'my-game-collection';
 const FILE   = 'games.json';
 const BRANCH = 'main';
 const API_URL = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${FILE}?ref=${BRANCH}`;
-const PAT_KEY     = 'gcol_pat';
-const VIEW_KEY    = 'gcol_view';
-const BGG_KEY_KEY = 'gcol_bgg_key';
-
-// BGG XML API2 base. If you hit CORS errors swap in a proxy:
-// const BGG_BASE = 'https://corsproxy.io/?https://boardgamegeek.com/xmlapi2';
-const BGG_BASE = 'https://boardgamegeek.com/xmlapi2';
+const PAT_KEY       = 'gcol_pat';
+const VIEW_KEY      = 'gcol_view';
+const BGG_PROXY_KEY = 'gcol_bgg_proxy';
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const S = {
   data: { games: [], tags: [] },
   sha: null,
-  pat:    localStorage.getItem(PAT_KEY)     || '',
-  bggKey: localStorage.getItem(BGG_KEY_KEY) || '',
+  pat:      localStorage.getItem(PAT_KEY)       || '',
+  bggProxy: localStorage.getItem(BGG_PROXY_KEY) || '',
   activeTags: new Set(),
   view:  localStorage.getItem(VIEW_KEY) || 'grid',
   saving:  false,
@@ -98,9 +94,11 @@ async function saveData() {
 
 // ── BGG API ───────────────────────────────────────────────────────────────────
 function bggFetch(path, params = {}) {
-  if (S.bggKey) params.apikey = S.bggKey;
+  if (!S.bggProxy) throw new Error('No BGG proxy configured — open Settings and add your Worker URL.');
   const qs = new URLSearchParams(params).toString();
-  return fetch(`${BGG_BASE}${path}?${qs}`);
+  // Trim trailing slash so URLs stay clean
+  const base = S.bggProxy.replace(/\/$/, '');
+  return fetch(`${base}${path}?${qs}`);
 }
 
 function parseXml(text) {
@@ -428,7 +426,7 @@ function closeModal() {
   clearTimeout(bggSearchTimer);
 }
 
-// Settings (PAT + BGG key)
+// Settings (PAT + BGG proxy URL)
 function openSettingsModal() {
   openModal(`
     <h2>Settings</h2>
@@ -448,20 +446,22 @@ function openSettingsModal() {
     </div>
 
     <div class="settings-section">
-      <h3>BoardGameGeek API</h3>
+      <h3>BGG Search Proxy</h3>
       <p class="modal-hint">
-        Your BGG API key enables game search and auto-fills details &amp; cover images when adding games.
-        Stored only in your browser — never committed to the repo.
+        Paste your Cloudflare Worker URL here to enable game search and auto-fill.
+        Your BGG API key lives as a secret on the Worker — it never touches the browser.
+        See <code>bgg-proxy/worker.js</code> in the repo for setup instructions.
       </p>
       <label>
-        <span>BGG API Key</span>
-        <input id="bgg-key-input" type="password" value="${esc(S.bggKey)}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off" />
+        <span>Worker URL</span>
+        <input id="bgg-proxy-input" type="url" value="${esc(S.bggProxy)}"
+               placeholder="https://bgg-proxy.your-name.workers.dev" autocomplete="off" />
       </label>
     </div>
 
     <div class="modal-actions" style="margin-top:24px">
       <button class="btn-primary" onclick="saveSettings()">Save</button>
-      ${(S.pat || S.bggKey)
+      ${(S.pat || S.bggProxy)
         ? `<button class="btn-danger" onclick="clearSettings()">Clear All</button>`
         : ''}
       <button class="btn-secondary" onclick="closeModal()">Cancel</button>
@@ -469,20 +469,20 @@ function openSettingsModal() {
   `);
 }
 function saveSettings() {
-  const pat = (document.getElementById('pat-input')?.value    || '').trim();
-  const bgg = (document.getElementById('bgg-key-input')?.value || '').trim();
-  S.pat    = pat;
-  S.bggKey = bgg;
-  pat ? localStorage.setItem(PAT_KEY,     pat) : localStorage.removeItem(PAT_KEY);
-  bgg ? localStorage.setItem(BGG_KEY_KEY, bgg) : localStorage.removeItem(BGG_KEY_KEY);
+  const pat   = (document.getElementById('pat-input')?.value       || '').trim();
+  const proxy = (document.getElementById('bgg-proxy-input')?.value || '').trim();
+  S.pat      = pat;
+  S.bggProxy = proxy;
+  pat   ? localStorage.setItem(PAT_KEY,       pat)   : localStorage.removeItem(PAT_KEY);
+  proxy ? localStorage.setItem(BGG_PROXY_KEY, proxy) : localStorage.removeItem(BGG_PROXY_KEY);
   closeModal();
   renderApp();
   showToast('Settings saved.');
 }
 function clearSettings() {
-  S.pat = ''; S.bggKey = '';
+  S.pat = ''; S.bggProxy = '';
   localStorage.removeItem(PAT_KEY);
-  localStorage.removeItem(BGG_KEY_KEY);
+  localStorage.removeItem(BGG_PROXY_KEY);
   closeModal();
   renderApp();
   showToast('Settings cleared. View-only mode.');
@@ -570,7 +570,7 @@ function confirmDeleteGame(id) {
 // Shared game form HTML
 function gameForm(game) {
   const v = (field, fallback = '') => esc(game?.[field] ?? fallback);
-  const hasBgg = !!S.bggKey;
+  const hasBgg = !!S.bggProxy;
 
   const tagChecks = S.data.tags.map(tag => {
     const checked = (game?.tags || []).includes(tag.id) ? 'checked' : '';
@@ -593,7 +593,13 @@ function gameForm(game) {
       <div id="bgg-results"></div>
     </div>
     <div class="form-divider"></div>
-    ` : ''}
+    ` : `
+    <p class="bgg-no-proxy-hint">
+      💡 <a href="#" onclick="event.preventDefault();openSettingsModal()">Add your BGG proxy URL in Settings</a>
+      to enable game search and auto-fill.
+    </p>
+    <div class="form-divider"></div>
+    `}
 
     <div class="thumb-and-form">
       <div id="thumb-preview" class="${thumbUrl ? 'has-image' : ''}">
@@ -749,8 +755,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key !== 'Enter') return;
     if (!document.getElementById('modal-overlay').classList.contains('open')) return;
     if (document.activeElement?.id === 'new-tag-input') submitTag();
-    if (document.activeElement?.id === 'pat-input')     saveSettings();
-    if (document.activeElement?.id === 'bgg-key-input') saveSettings();
+    if (document.activeElement?.id === 'pat-input')       saveSettings();
+    if (document.activeElement?.id === 'bgg-proxy-input') saveSettings();
   });
   loadData();
 });
